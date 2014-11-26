@@ -32,6 +32,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.provider.Browser;
+import android.os.SystemProperties;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
@@ -115,6 +116,53 @@ public class WebViewContentsClientAdapter extends AwContentsClient {
 
     private WeakHashMap<AwPermissionRequest, WeakReference<PermissionRequestAdapter>>
             mOngoingPermissionRequests;
+
+    //for IPTV retry loading scheme
+    private static final int mWebKitLoadUrlRetryCnt = SystemProperties.getInt(
+               "webkit.loadurl.retry_cnt", 0);
+
+    private static final int mWebKitLoadUrlTimeout = SystemProperties.getInt(
+               "webkit.loadurl.timeout", 0);
+
+    private int mWebKitProgress = 0;
+
+    private int mWebKitRetryCnt = 0;
+
+    private int mWebKitFlag = 0; /*0-inital, 1-loaded, 2-reload, 3-stopload*/
+
+    private Runnable mWebKitProgressRunnable = new Runnable() {
+        @Override
+        public void run() {
+            mWebKitRetryCnt++;
+            if (mWebKitRetryCnt < mWebKitLoadUrlRetryCnt) {
+                if (TRACE) Log.d(TAG, "onProgressChanged reload count:" + mWebKitRetryCnt);
+                mWebView.reload();
+            } else {
+                if (TRACE) Log.d(TAG, "onProgressChanged stopLoading");
+                mWebKitRetryCnt = 0;
+                mWebView.stopLoading();
+            }
+        }
+    };
+
+    private void checkRetry(int progress) {
+        mWebKitProgress = progress;
+        if (mWebKitLoadUrlRetryCnt > 0 && mWebKitLoadUrlTimeout > 0) {
+            if (100 == mWebKitProgress) {
+                if (1 != mWebKitFlag) {
+                    if (TRACE) Log.d(TAG, "onProgressChanged removeCallbacks");
+                    mUiThreadHandler.removeCallbacks(mWebKitProgressRunnable);
+                }
+                mWebKitFlag = 1;
+            } else if (0 == mWebKitProgress) {
+                mWebKitFlag = 0;
+                if (TRACE) Log.d(TAG, "onProgressChanged postDelayed");
+                mUiThreadHandler.postDelayed(mWebKitProgressRunnable, mWebKitLoadUrlTimeout*1000);
+            }
+        }
+    }
+
+
     /**
      * Adapter constructor.
      *
@@ -266,6 +314,10 @@ public class WebViewContentsClientAdapter extends AwContentsClient {
         if (mWebChromeClient != null) {
             if (TRACE) Log.d(TAG, "onProgressChanged=" + progress);
             mWebChromeClient.onProgressChanged(mWebView, progress);
+            //for IPTV retry
+            if ((mWebKitLoadUrlRetryCnt > 0) || (mWebKitLoadUrlTimeout > 0)) {
+                checkRetry(progress);
+            }
         }
         TraceEvent.end();
     }
